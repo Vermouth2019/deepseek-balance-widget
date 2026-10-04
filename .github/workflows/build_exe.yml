@@ -1,0 +1,29 @@
+# 在 GitHub 上自动构建 Windows exe（无需本地装 Python）
+# 用法：把 deepseek_balance_widget.py 和本文件推送到 GitHub 仓库
+#       路径：.github/workflows/build_exe.yml
+#       然后 Actions 页面运行 workflow，Artifacts 里下载 DeepSeekBalance-Windows
+name: Build Windows exe
+
+on:
+  workflow_dispatch:   # 手动触发
+  push:
+    paths:
+      - 'deepseek_balance_widget.py'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+      - name: Build exe
+        run: pyinstaller --noconfirm --clean --onefile --windowed --name "DeepSeekBalance" deepseek_balance_widget.py
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeepSeekBalance-Windows
+          path: dist/DeepSeekBalance.exe
