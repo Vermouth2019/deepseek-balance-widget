@@ -5,15 +5,15 @@
  依据官方文档: https://api-docs.deepseek.com/zh-cn/api/get-user-balance
 
  用法:
-   1. python deepseek_balance_widget.py
-   2. 首次运行点击窗口右上角 "⚙" 或在窗口上右键 → 输入 API Key
+   1. python deepseek_balance_widget.py (或双击 DeepSeekBalance.exe)
+   2. 首次运行点窗口右上角 "⚙" 或右键 → 输入 API Key
       Key 保存在 %APPDATA%\\DeepSeekBalanceWidget\\config.json
-   3. 右键菜单可切换 small / medium / large、置顶、刷新
+   3. 右键菜单: 设置 / 刷新 / 三档尺寸 / 置顶 / 退出
 
- 特性:
-   - 无边框可拖动小窗, 点击标题栏拖动, 双击托盘区无操作
-   - 每分钟自动刷新余额, 背景均衡器条每分钟律动
-   - 401 自动清除 Key 并提示重新配置
+ 窗口操作:
+   - 拖动标题区移动窗口
+   - 右下角 ⇲ 拖拽无极缩放 (字体随窗口等比缩放)
+   - 双击打开 platform.deepseek.com
 ═══════════════════════════════════════════════════
 """
 
@@ -41,10 +41,10 @@ NEON_GRN = "#05FFA1"
 BG_TOP = "#04010F"
 BG_BOT = "#12032E"
 
-FONT = "Consolas"          # Windows 上等宽字体，接近 Menlo
+FONT = "Consolas"
 SIZES = {"small": (190, 190), "medium": (380, 190), "large": (380, 420)}
 
-CELL = "░▒▒▓▓▓███"  # 索引 0..8 = 该格填充的 1/8 数（与原版一致）
+CELL = "░▒▒▓▓▓███"  # 索引 0..8 = 该格填充的 1/8 数（与 iOS 原版一致）
 
 
 def hx(h):
@@ -65,12 +65,12 @@ def MAG(t):
 
 
 def bar(frac, width=12):
-    """12 格 ░▒▓█ 比例条：四级灰度连续过渡，无断缝（原版算法）"""
+    """12 格比例条：四级灰度连续过渡，无断缝（原版算法）"""
     e = round(max(0.0, min(1.0, frac)) * width * 8)
     return "".join(CELL[max(0, min(8, e - i * 8))] for i in range(width))
 
 
-# ---------- 配置 (API Key 存储) ----------
+# ---------- 配置 ----------
 def load_config():
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -114,13 +114,15 @@ class DeepSeekWidget:
         self.data = None
         self.err_status = None
         self._drag = None
+        self._resize = None
+        self.scale = 1.0
 
         self.root = tk.Tk()
         self.root.title("DEEPSEEK://BALANCE")
         self.size_name = self.cfg.get("size", "medium")
         w, h = SIZES[self.size_name]
         self.root.geometry(f"{w}x{h}+80+80")
-        self.root.overrideredirect(True)          # 无边框
+        self.root.overrideredirect(True)
         self.root.attributes("-topmost", self.cfg.get("ontop", True))
         self.root.configure(bg=BG_BOT)
         self.root.attributes("-alpha", 0.98)
@@ -128,12 +130,13 @@ class DeepSeekWidget:
         self.canvas = tk.Canvas(self.root, highlightthickness=0, bd=0, bg=BG_BOT)
         self.canvas.pack(fill="both", expand=True)
 
-        # 拖动 & 交互
         self.canvas.bind("<Button-1>", self._on_press)
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
-        self.canvas.bind("<Button-3>", self._show_menu)      # 右键菜单
+        self.canvas.bind("<Motion>", self._on_motion)
+        self.canvas.bind("<Button-3>", self._show_menu)
         self.canvas.bind("<Double-Button-1>", lambda e: os.system(f'start "" "{PLATFORM_URL}"'))
+        self.root.bind("<Configure>", lambda e: self.redraw())
 
         self.menu = tk.Menu(self.root, tearoff=0, font=(FONT, 9))
         self.menu.add_command(label="⚙ 设置 API Key", command=self.ask_api_key)
@@ -152,22 +155,44 @@ class DeepSeekWidget:
         self.refresh()
         self._tick()
 
-    # ---- 拖动 ----
+    # ---- 移动 / 缩放 ----
     def _on_press(self, e):
-        self._drag = (e.x, e.y)
-        # 点 ⚙ 区域
-        if e.x > SIZES[self.size_name][0] - 30 and e.y < 26:
-            self._drag = None
+        self._drag = None
+        self._resize = None
+        W = self.root.winfo_width()
+        H = self.root.winfo_height()
+        # 右下角 16px 缩放热区
+        if e.x > W - 18 and e.y > H - 18:
+            self._resize = (e.x, e.y, W, H)
+            return
+        # 右上角 ⚙
+        if e.x > W - 34 and e.y < 28:
             self.ask_api_key()
+            return
+        self._drag = (e.x, e.y)
 
     def _on_drag(self, e):
-        if not self._drag:
+        if self._resize:
+            x0, y0, w0, h0 = self._resize
+            nw = max(150, w0 + (e.x - x0))
+            nh = max(120, h0 + (e.y - y0))
+            self.root.geometry(f"{nw}x{nh}")
             return
-        dx, dy = e.x - self._drag[0], e.y - self._drag[1]
-        self.root.geometry(f"+{self.root.winfo_x()+dx}+{self.root.winfo_y()+dy}")
+        if self._drag:
+            dx, dy = e.x - self._drag[0], e.y - self._drag[1]
+            self.root.geometry(f"+{self.root.winfo_x()+dx}+{self.root.winfo_y()+dy}")
 
     def _on_release(self, e):
         self._drag = None
+        self._resize = None
+
+    def _on_motion(self, e):
+        W = self.root.winfo_width()
+        H = self.root.winfo_height()
+        if e.x > W - 18 and e.y > H - 18:
+            self.canvas.config(cursor="size_nw_se")
+        else:
+            self.canvas.config(cursor="fleur")
 
     def _show_menu(self, e):
         self.menu.tk_popup(e.x_root, e.y_root)
@@ -207,7 +232,6 @@ class DeepSeekWidget:
         save_config(self.cfg)
         w, h = SIZES[name]
         self.root.geometry(f"{w}x{h}")
-        self.redraw()
 
     def toggle_ontop(self):
         self.root.attributes("-topmost", self.ontop_var.get())
@@ -227,9 +251,6 @@ class DeepSeekWidget:
         self.redraw()
 
     def _tick(self):
-        # 每分钟刷新 + 均衡器重绘
-        if int(time.time()) % 60 < 2:
-            pass
         self.refresh()
         self.root.after(60_000, self._tick)
 
@@ -241,7 +262,11 @@ class DeepSeekWidget:
         H = self.root.winfo_height()
         if W < 10:
             W, H = SIZES[self.size_name]
-        seed = int(time.time() // 60)  # 每分钟变化
+        # 缩放系数：以预设宽度为基准，拖动缩放时字体/间距等比变化
+        base_w = SIZES[self.size_name][0]
+        self.scale = max(0.6, min(2.2, W / base_w))
+        fs = lambda s: max(6, int(round(s * self.scale)))
+        seed = int(time.time() // 60)
         rnd = random.Random(seed)
 
         # 深色渐变基底
@@ -260,19 +285,18 @@ class DeepSeekWidget:
         for y in range(0, H, 3):
             c.create_line(0, y, W, y, fill=CYAN(0.035))
 
-        # 右上角霓虹辉光：实心圆堆叠出径向渐变（原版平方衰减）
-        gx, gy = W - 32, 10
+        # 右上角霓虹辉光
+        gx, gy = W - 32 * self.scale, 10 * self.scale
         for r in range(26, 0, -2):
             t = (1 - r / 26) ** 2 * 0.10
             c.create_oval(gx - r, gy - r, gx + r, gy + r, outline="", fill=CYAN(t))
-        # 三组双填充圆环（外圈亮、内圈暗，形成环带）
         for r in (13, 9, 5):
             c.create_oval(gx - r, gy - r, gx + r, gy + r, outline="", fill=CYAN(0.20))
             ri = r - 1.5
             c.create_oval(gx - ri, gy - ri, gx + ri, gy + ri, outline="", fill=CYAN(0.05))
 
         # HUD 角框
-        m, L, T = 5, 16, 3
+        m, L, T = 5 * self.scale, 16 * self.scale, 3 * self.scale
         for cx, cy, sx, sy in ((m, m, 1, 1), (W - m, m, -1, 1),
                                (m, H - m, 1, -1), (W - m, H - m, -1, -1)):
             x0 = cx if sx > 0 else cx - L
@@ -285,47 +309,57 @@ class DeepSeekWidget:
         c.create_rectangle(0, H - 2, W, H, outline="", fill=MAG(0.5))
 
         # 底部均衡器律动条
-        base = H - 4
-        x = 8
-        while x < W - 8:
-            bh = rnd.randint(3, 14)
+        base = H - 4 * self.scale
+        x = 8 * self.scale
+        bw = max(2, 3 * self.scale)
+        while x < W - 8 * self.scale:
+            bh = rnd.randint(3, 14) * self.scale
             color = MAG(0.55) if rnd.random() > 0.75 else CYAN(0.45)
-            c.create_rectangle(x, base - bh, x + 3, base, outline="", fill=color)
-            x += 7
+            c.create_rectangle(x, base - bh, x + bw, base, outline="", fill=color)
+            x += 7 * self.scale
 
-        self._draw_content(W, H)
+        # 右下角缩放手柄
+        s = 6 * self.scale
+        c.create_line(W - s - 2, H - 2, W - 2, H - s - 2, fill=CYAN(0.5), width=1)
+        c.create_line(W - s * 1.7 - 2, H - 2, W - 2, H - s * 1.7 - 2, fill=CYAN(0.3), width=1)
 
-    def _draw_content(self, W, H):
+        self._draw_content(W, H, fs)
+
+    def _draw_content(self, W, H, fs):
         c = self.canvas
         data = self.data
+        sc = self.scale
+        px = 15 * sc
 
         # 标题
-        x = 15
-        c.create_text(x, 20, anchor="w", text="DEEPSEEK", font=(FONT, 13, "bold"), fill=NEON_CYAN)
-        w1 = self._textwidth("DEEPSEEK", 12, True)
-        c.create_text(x + w1, 20, anchor="w", text="://", font=(FONT, 13, "bold"), fill=NEON_MAG)
-        w2 = self._textwidth("://", 12, True)
-        c.create_text(x + w1 + w2, 20, anchor="w", text="BALANCE", font=(FONT, 13, "bold"), fill=NEON_CYAN)
+        c.create_text(px, 20 * sc, anchor="w", text="DEEPSEEK",
+                      font=(FONT, fs(13), "bold"), fill=NEON_CYAN)
+        w1 = self._textwidth("DEEPSEEK", fs(13), True)
+        c.create_text(px + w1, 20 * sc, anchor="w", text="://",
+                      font=(FONT, fs(13), "bold"), fill=NEON_MAG)
+        w2 = self._textwidth("://", fs(13), True)
+        c.create_text(px + w1 + w2, 20 * sc, anchor="w", text="BALANCE",
+                      font=(FONT, fs(13), "bold"), fill=NEON_CYAN)
         led_color = NEON_GRN if (data and data.get("is_available")) else NEON_MAG
-        c.create_text(W - 32, 18, anchor="e", text="●", font=(FONT, 10), fill=led_color)
-        c.create_text(W - 18, 18, anchor="e", text="⚙", font=(FONT, 9), fill=CYAN(0.6))
+        c.create_text(W - 32 * sc, 18 * sc, anchor="e", text="●", font=(FONT, fs(10)), fill=led_color)
+        c.create_text(W - 16 * sc, 18 * sc, anchor="e", text="⚙", font=(FONT, fs(10)), fill=CYAN(0.6))
 
         if data and data.get("balance_infos"):
             status = "SYS.STATUS: ONLINE" if data.get("is_available") else "SYS.STATUS: LOW BALANCE"
-            c.create_text(15, 40, anchor="w", text=status, font=(FONT, 9), fill=CYAN(0.55))
+            c.create_text(px, 40 * sc, anchor="w", text=status, font=(FONT, fs(9)), fill=CYAN(0.55))
             ncur = "[%d CUR]" % len(data["balance_infos"])
-            c.create_text(W - 15, 40, anchor="e", text=ncur, font=(FONT, 9), fill=MAG(0.6))
+            c.create_text(W - px, 40 * sc, anchor="e", text=ncur, font=(FONT, fs(9)), fill=MAG(0.6))
 
-            y = 64
-            small = self.size_name == "small"
+            y = 64 * sc
+            small = (self.size_name == "small") and sc < 1.2
             for info in data["balance_infos"]:
                 sym = "¥" if info.get("currency") == "CNY" else "$"
-                c.create_text(15, y, anchor="w", text="▸ " + info.get("currency", "?"),
-                              font=(FONT, 12, "bold"), fill=NEON_MAG)
+                c.create_text(px, y, anchor="w", text="▸ " + info.get("currency", "?"),
+                              font=(FONT, fs(12), "bold"), fill=NEON_MAG)
                 amt = sym + str(info.get("total_balance", "0"))
-                c.create_text(W - 15, y, anchor="e", text=amt,
-                              font=(FONT, 17 if small else 26, "bold"), fill=NEON_CYAN)
-                y += 28
+                c.create_text(W - px, y, anchor="e", text=amt,
+                              font=(FONT, fs(17 if small else 26), "bold"), fill=NEON_CYAN)
+                y += 28 * sc
 
                 if not small:
                     tot = float(info.get("total_balance") or 0) or 1
@@ -333,41 +367,38 @@ class DeepSeekWidget:
                     u = float(info.get("topped_up_balance") or 0)
                     gtxt = "GRT " + bar(g / tot) + " %s%s" % (sym, info.get("granted_balance", "0"))
                     utxt = "TOP " + bar(u / tot) + " %s%s" % (sym, info.get("topped_up_balance", "0"))
-                    c.create_text(15, y, anchor="w", text=gtxt, font=(FONT, 9), fill=CYAN(0.45))
-                    y += 17
-                    c.create_text(15, y, anchor="w", text=utxt, font=(FONT, 9), fill=MAG(0.45))
-                    y += 20
-                y += 6
+                    c.create_text(px, y, anchor="w", text=gtxt, font=(FONT, fs(9)), fill=CYAN(0.45))
+                    y += 17 * sc
+                    c.create_text(px, y, anchor="w", text=utxt, font=(FONT, fs(9)), fill=MAG(0.45))
+                    y += 20 * sc
+                y += 6 * sc
         else:
-            c.create_text(15, 65, anchor="w", text="⚠ SIGNAL LOST",
-                          font=(FONT, 13, "bold"), fill=NEON_MAG)
+            c.create_text(px, 65 * sc, anchor="w", text="⚠ SIGNAL LOST",
+                          font=(FONT, fs(14), "bold"), fill=NEON_MAG)
             if self.err_status == "NO_KEY":
                 msg = "未配置 API KEY\n点击右上角 ⚙ 或右键设置"
             elif self.err_status == 401:
                 msg = "ERR 401: INVALID KEY\n点击 ⚙ 重新配置"
             else:
                 msg = "NET TIMEOUT · 稍后自动重试"
-            c.create_text(15, 92, anchor="w", text=msg, font=(FONT, 10), fill=CYAN(0.5))
+            c.create_text(px, 92 * sc, anchor="w", text=msg, font=(FONT, fs(10)), fill=CYAN(0.5))
 
         # 底栏
         hh = datetime.now().strftime("%H:%M")
-        c.create_text(15, H - 18, anchor="w", text="SYNC " + hh + " ▮",
-                      font=(FONT, 9), fill=CYAN(0.45))
+        c.create_text(px, H - 18 * sc, anchor="w", text="SYNC " + hh + " ▮",
+                      font=(FONT, fs(9)), fill=CYAN(0.45))
         hexid = "%04X" % random.randint(0, 0xFFFF)
-        c.create_text(W - 15, H - 18, anchor="e", text="0x" + hexid + " ▯",
-                      font=(FONT, 9), fill=MAG(0.5))
-
-    def _textwidth(self, text, size, bold=False):
-        f = (FONT, size, "bold") if bold else (FONT, size)
-        return self._measure.setdefault((text, size, bold), self._tkfont(text, size, bold))
-
-    def _tkfont(self, text, size, bold):
-        f = tkfont.Font(family=FONT, size=size, weight="bold" if bold else "normal")
-        w = f.measure(text)
-        f.destroy_font if hasattr(f, 'destroy_font') else None
-        return w
+        c.create_text(W - px, H - 18 * sc, anchor="e", text="0x" + hexid + " ▯",
+                      font=(FONT, fs(9)), fill=MAG(0.5))
 
     _measure = {}
+
+    def _textwidth(self, text, size, bold=False):
+        key = (text, size, bold)
+        if key not in self._measure:
+            f = tkfont.Font(family=FONT, size=size, weight="bold" if bold else "normal")
+            self._measure[key] = f.measure(text)
+        return self._measure[key]
 
     def run(self):
         self.root.mainloop()
